@@ -94,6 +94,80 @@ func (m *Consumer) Consume(exchange *Exchange, queue *Queue, routingKey string, 
 	return nil
 }
 
+// 订阅处理, block:
+func (m *Consumer) Subscribe(exchange *Exchange, queue *Queue, routingKey string, consumerTag string, taskFn TaskFunc) error {
+	forever := make(chan bool)
+	channel, err := m.conn.Channel()
+	if err != nil {
+		return fmt.Errorf("rabbitmq get channel error: %v'", err)
+	}
+	defer channel.Close()
+
+	// 1. declare exchange:
+	if err := channel.ExchangeDeclare(
+		exchange.Name,
+		exchange.Type,
+		true,
+		false,
+		false,
+		false,
+		nil,
+	); err != nil {
+		return fmt.Errorf("rabbitmq exchange declare error: %v", err)
+	}
+
+	// 2. declare queue:
+	if _, err := channel.QueueDeclare(
+		queue.Name,
+		queue.Durable,
+		queue.AutoDelete,
+		queue.Exclusive,
+		queue.NoWait,
+		queue.Args,
+	); err != nil {
+		return fmt.Errorf("rabbitmq queue declare error: %v", err)
+	}
+
+	// 3. binding queue to exchange:
+	if err := channel.QueueBind(queue.Name, routingKey, exchange.Name, false, nil, ); err != nil {
+		return fmt.Errorf("rabbitmq queue binding exchange error: %v", err)
+	}
+
+	// 4. consume:
+	deliveries, err := channel.Consume(
+		queue.Name,  // name
+		consumerTag, // consumerTag,
+		false,        // autodelete
+		false,       // exclusive
+		false,       // noLocal
+		false,       // noWait
+		nil,         // arguments
+	)
+	if err != nil {
+		return fmt.Errorf("rabbitmq queue consume error: %s", err)
+	}
+
+	// 5. do handle task:
+	go m.handleTasksAck(deliveries, m.done, taskFn)
+	<-forever
+	return nil
+}
+
+func (m *Consumer) handleTasksAck(deliveries <-chan amqp.Delivery, done chan error, taskFn TaskFunc) {
+	for d := range deliveries {
+		log.Infof("rabbitmq consumer: handle task - size=%d B delivery=[%v] msg=%q", len(d.Body), d.DeliveryTag, d.Body)
+
+		// handle one message:
+		if err := taskFn(string(d.Body)); err != nil {
+			log.Errorf("rabbitmq consumer.Consume: taskFunc error: %v, message: %v", err, string(d.Body))
+		}
+		// ack one:
+		_ = d.Ack(true)
+	}
+	log.Infof("rabbitmq consumer handle done: deliveries channel closed")
+	done <- nil
+}
+
 // 单条消息处理:
 func (m *Consumer) Get(exchange *Exchange, queue *Queue, routingKey string, consumerTag string, taskFn TaskFunc) error {
 	channel, err := m.conn.Channel()
