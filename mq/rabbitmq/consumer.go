@@ -160,6 +160,7 @@ func (m *Consumer) handleTasksAck(deliveries <-chan amqp.Delivery, done chan err
 		// handle one message:
 		if err := taskFn(string(d.Body)); err != nil {
 			log.Errorf("rabbitmq consumer.Consume: taskFunc error: %v, message: %v", err, string(d.Body))
+			continue
 		}
 		// ack one:
 		_ = d.Ack(true)
